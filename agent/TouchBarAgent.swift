@@ -236,8 +236,7 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
             if req["kind"] as? String == "question" {
                 text = "❓ " + Self.truncate(req["header"] as? String ?? "提问", 14)
             } else {
-                let mark = (req["risk"] as? String) == "high" ? "⚠️" : "🔐"
-                text = mark + " " + Self.truncate(req["tool"] as? String ?? "工具", 14)
+                text = "需要权限"
             }
             item.view = HandlerButton(title: text, fontSize: 13) { [weak self] in
                 self?.present(touchBar)
