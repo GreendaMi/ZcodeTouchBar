@@ -1,0 +1,195 @@
+// ZCode PermissionRequest hook 逻辑（JXA / JavaScript for Automation）
+// 用法: osascript -l JavaScript parse.jxa <stateDir> <waitSeconds>
+// stdin: ZCode 事件 JSON（单行）
+// stdout: 决策 JSON，或空（空 = 降级到 ZCode 原生询问界面，不产生任何副作用）
+//
+// 协议（与 Touch Bar 助手 TouchBarAgent.swift 约定）:
+//   request.json  = { id, ts, deadline, kind: "question"|"permission", … }
+//   ack.json      = { id }                          （助手存活确认，hook 删除后下次复用）
+//   response.json = { id, choice: <int> }           （question：选中的选项下标）
+//                 | { id, action: "allow"|"deny" }  （permission）
+ObjC.import('Foundation');
+
+function run(argv) {
+  try {
+    main(argv);
+  } catch (e) {
+    stderr('zcode-touchbar: ' + e);
+  }
+  return '';
+}
+
+function main(argv) {
+  var stateDir = argv[0];
+  var waitSeconds = parseFloat(argv[1] || '60') || 60;
+  var raw = readStdin();
+  if (!raw || raw.indexOf('{') === -1) return;
+
+  var ev = parseJSON(raw);
+  if (!ev || ev.hook_event_name !== 'PermissionRequest') return;
+
+  var toolName = ev.tool_name || ev.toolName || '';
+  var toolInput = ev.tool_input || ev.toolInput || {};
+
+  var req;
+  if (toolName === 'AskUserQuestion') {
+    req = buildQuestionRequest(toolInput);
+  } else if (toolName === 'EnterPlanMode' || toolName === 'ExitPlanMode') {
+    return; // 计划审批需要通读全文，留给原生界面
+  } else {
+    req = buildPermissionRequest(toolName, ev);
+  }
+  if (!req) return; // 不支持的形态（多问题 / multiSelect / 无选项）→ 降级
+
+  var id = new Date().getTime().toString(36) + Math.floor(Math.random() * 1e9).toString(36);
+  req.id = id;
+  req.ts = new Date().getTime();
+  req.deadline = req.ts + waitSeconds * 1000;
+
+  removeFile(stateDir + '/ack.json');
+  removeFile(stateDir + '/response.json');
+  writeJSON(stateDir + '/request.json', req);
+
+  // 2s 内没有助手确认 → 助手未运行，静默降级（这是设计行为，不是错误）
+  var ackDeadline = new Date().getTime() + 2000;
+  var acked = false;
+  while (new Date().getTime() < ackDeadline) {
+    var ack = readJSON(stateDir + '/ack.json');
+    if (ack && ack.id === id) { acked = true; break; }
+    delay(0.1);
+  }
+  if (!acked) {
+    removeFile(stateDir + '/request.json');
+    return;
+  }
+
+  // 等待 Touch Bar 点选；hook 与 ZCode 原生询问 UI 是并行竞赛，先答先赢
+  while (new Date().getTime() < req.deadline) {
+    var resp = readJSON(stateDir + '/response.json');
+    if (resp && resp.id === id) {
+      cleanup(stateDir);
+      var decision = buildDecision(req, resp, toolInput);
+      if (decision) stdout(decision);
+      return;
+    }
+    delay(0.2);
+  }
+  cleanup(stateDir); // 超时：熄灭 Touch Bar（助手发现 request.json 消失会自动收起），空输出降级
+}
+
+// ── 请求构造 ────────────────────────────────────────────────────────────────
+
+function buildQuestionRequest(toolInput) {
+  var qs = toolInput.questions;
+  if (!qs || !qs.length || qs.length !== 1) return null; // 0 或 2-4 个问题 → 原生界面
+  var q = qs[0];
+  if (q.multiSelect) return null;
+  var options = [];
+  var opts = q.options || [];
+  for (var i = 0; i < opts.length && i < 4; i++) {
+    if (!opts[i] || !opts[i].label) continue;
+    options.push({
+      label: String(opts[i].label),
+      description: String(opts[i].description || '').slice(0, 60),
+    });
+  }
+  if (options.length < 1) return null;
+  return {
+    kind: 'question',
+    header: String(q.header || '提问').slice(0, 12),
+    question: String(q.question || ''),
+    options: options,
+  };
+}
+
+function buildPermissionRequest(toolName, ev) {
+  return {
+    kind: 'permission',
+    tool: String(toolName || '工具'),
+    reason: String(ev.reason || '').slice(0, 100),
+    risk: String(ev.riskLevel || ev.risk_level || ''),
+  };
+}
+
+// ── 决策组装（stdout JSON 严格按引擎 schema，顶层仅一个键）─────────────────
+
+function buildDecision(req, resp, toolInput) {
+  if (req.kind === 'question') {
+    var idx = parseInt(resp.choice, 10);
+    if (isNaN(idx) || idx < 0 || idx >= req.options.length) return null;
+    var answers = {};
+    answers[req.question] = req.options[idx].label;
+    var updatedInput = {};
+    for (var k in toolInput) {
+      if (Object.prototype.hasOwnProperty.call(toolInput, k)) updatedInput[k] = toolInput[k];
+    }
+    updatedInput.answers = answers;
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'allow', updatedInput: updatedInput },
+      },
+    });
+  }
+  if (resp.action === 'allow') {
+    return JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PermissionRequest',
+        decision: { behavior: 'allow' },
+      },
+    });
+  }
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PermissionRequest',
+      decision: { behavior: 'deny', message: '用户通过 Touch Bar 拒绝了该操作' },
+    },
+  });
+}
+
+// ── IO 工具 ────────────────────────────────────────────────────────────────
+
+function parseJSON(s) {
+  try { return JSON.parse(s); } catch (e) { return null; }
+}
+
+function readStdin() {
+  var data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+  if (data.isNil()) return '';
+  return $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js || '';
+}
+
+function readJSON(path) {
+  var data = $.NSData.dataWithContentsOfFile(path);
+  if (data.isNil()) return null;
+  return parseJSON($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js || '');
+}
+
+function writeJSON(path, obj) {
+  var tmp = path + '.tmp';
+  var err = Ref();
+  var str = $.NSString.alloc.initWithUTF8String(JSON.stringify(obj));
+  str.writeToFileAtomicallyEncodingError(tmp, true, $.NSUTF8StringEncoding, err);
+  removeFile(path);
+  $.NSFileManager.defaultManager.moveItemAtPathToPathError(tmp, path, err);
+}
+
+function removeFile(path) {
+  $.NSFileManager.defaultManager.removeItemAtPathError(path, null);
+}
+
+function cleanup(stateDir) {
+  removeFile(stateDir + '/request.json');
+  removeFile(stateDir + '/response.json');
+}
+
+// 经由 NSFileHandle 直接写 stdout：不依赖 osascript 的返回值格式化行为
+function stdout(s) {
+  var data = $.NSString.alloc.initWithUTF8String(s + '\n').dataUsingEncoding($.NSUTF8StringEncoding);
+  $.NSFileHandle.fileHandleWithStandardOutput.writeData(data);
+}
+
+function stderr(s) {
+  var data = $.NSString.alloc.initWithUTF8String(s + '\n').dataUsingEncoding($.NSUTF8StringEncoding);
+  $.NSFileHandle.fileHandleWithStandardError.writeData(data);
+}

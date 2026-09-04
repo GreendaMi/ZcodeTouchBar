@@ -1,0 +1,10 @@
+{
+  "name": "zcode-touchbar",
+  "version": "0.1.0",
+  "description": "Operate ZCode inquiries from the MacBook Touch Bar: AI questions become option buttons, tool permission prompts become Allow/Deny buttons.",
+  "author": {
+    "name": "zpy"
+  },
+  "license": "MIT",
+  "hooks": "hooks"
+}

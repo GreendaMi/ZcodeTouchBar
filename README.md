@@ -50,12 +50,22 @@ bash scripts/install.sh
 
 ### 第 2 步:安装 ZCode 插件
 
-1. 打开 ZCode → 设置 → **插件管理** → 市场/发现页 → 「+」**添加本地市场**;
-2. 选择本目录(`/Users/zpy/Downloads/zcodeTouchBar`,含 `marketplace.json`);
+**方式 A:从 GitHub 安装(推荐)**
+
+1. 打开 ZCode → 设置 → **插件管理** → 市场/发现页 → 「+」**添加市场**;
+2. 输入 GitHub 仓库:`GreendaMi/zcodeTouchBar`;
 3. 安装列表中的 **zcode-touchbar**,重启 ZCode 会话。
 
-> 注意:`marketplace.json` 里插件源用的是**绝对路径** —— ZCode 桌面端安装插件时按自身工作目录解析相对路径,
-> 相对路径会报 "Plugin source directory does not exist"。若移动了本仓库,请同步更新该绝对路径。
+**方式 B:从本地目录安装(开发调试用)**
+
+1. 同上进入「+」添加本地市场,选择本仓库目录(含 `marketplace.json`);
+2. 安装 **zcode-touchbar**。
+
+> 注意:`marketplace.json` 发布版的插件源是 `git-subdir`(从本 GitHub 仓库拉取 `plugin/` 子目录),
+> 本地目录方式安装时同样会从 GitHub 拉取 —— 修改代码后**需要先 push 才能装到新版**。
+> 若要在推送前本地验证改动,可把 `plugins[0].source` 临时改回
+> `{"source": "directory", "path": "/绝对路径/zcodeTouchBar/plugin"}`(绝对路径必须,
+> 相对路径会因桌面端按自身工作目录解析而报 "Plugin source directory does not exist")。
 
 插件声明了 `PermissionRequest` hook(`matcher: "*"`),装入后 ZCode 的 hook runner 自动启用。
 

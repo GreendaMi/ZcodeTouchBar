@@ -1,0 +1,31 @@
+{
+  "name": "zcode-touchbar-local",
+  "plugins": [
+    {
+      "name": "zcode-touchbar",
+      "version": "0.1.0",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/GreendaMi/zcodeTouchBar.git",
+        "path": "plugin",
+        "ref": "main"
+      },
+      "description": "Operate ZCode inquiries from the MacBook Touch Bar: AI questions (AskUserQuestion) become option buttons, tool permission prompts become Allow/Deny buttons.",
+      "description_i18n": {
+        "en": "Operate ZCode inquiries from the MacBook Touch Bar: AI questions (AskUserQuestion) become option buttons, tool permission prompts become Allow/Deny buttons.",
+        "zh-CN": "在 MacBook Touch Bar 上操作 ZCode 的询问项：AI 提问（AskUserQuestion）变成选项按钮，工具权限确认变成「允许/拒绝」按钮。"
+      },
+      "author": {
+        "name": "GreendaMi"
+      },
+      "icon": "assets/icon.png",
+      "category": "developer-tools",
+      "keywords": [
+        "touchbar",
+        "hooks",
+        "macos",
+        "permission"
+      ]
+    }
+  ]
+}
