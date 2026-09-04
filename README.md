@@ -8,6 +8,7 @@
 
 - 🤖 **AI 提问**(AskUserQuestion):Touch Bar 点亮并显示每个选项一个按钮,点一下即作为你的回答发给 AI;
 - 🔐 **工具权限确认**(Bash / Write / Edit 等):Touch Bar 显示「✓ 允许 / ✕ 拒绝」按钮;
+- 📊 **菜单栏显示剩余额度**:点击菜单栏 💬 图标,下拉菜单里直接看 GLM Coding Plan 的 5 小时 / 本周窗口剩余百分比;
 - 💤 无询问时 Touch Bar 完全交还前台应用,零占用。
 
 全程**不模拟键盘、不需要辅助功能权限**。ZCode 的原生询问界面照常可用 —— Touch Bar 和界面是"先答先赢"的并行关系。
@@ -47,6 +48,32 @@ bash scripts/install.sh
 > 助手使用与 MTMR/Pock 相同的 DFRFoundation 私有 API。若你的机型没有 Touch Bar 或系统
 > 已移除相关 API,助手启动时会自动退出并在日志说明;此时插件仍可安全安装,只是所有询问
 > 都走 ZCode 原生界面。
+
+### 菜单栏额度显示
+
+点击菜单栏 💬 图标,下拉菜单在「退出」上方会显示(数据每 5 分钟自动刷新,也可点
+「刷新额度」手动拉取):
+
+```
+GLM Coding Plan（Lite）
+5 小时窗口 剩余 70%（16:12 重置）
+本周窗口 剩余 93%（9/10 14:54 重置）
+刷新额度（更新于 16:17）
+```
+
+额度数据来自智谱开放平台的监控接口 `GET /api/monitor/usage/quota/limit`:
+
+- **凭证来源**:自动读取本机 ZCode 配置 `~/.zcode/v2/config.json` 中当前选中的
+  Coding Plan provider 的 `apiKey`(依据 `~/.zcode/v2/setting.json` 的选择项)。
+  key **只在本机用于查询额度**,不做任何其他用途、不上报;
+- **端点自动判断**:provider 的 `baseURL` 含 `bigmodel.cn` 走国内端点
+  (`open.bigmodel.cn`),含 `z.ai` 走国际端点(`api.z.ai`);
+- **手动覆盖**:设置环境变量 `ZCODE_TOUCHBAR_USAGE_API_KEY`(可选配合
+  `ZCODE_TOUCHBAR_USAGE_URL`)可指定 key 与端点,优先于自动读取。
+  注意助手由 launchd 拉起,需用 `launchctl setenv` 或在 LaunchAgent plist 的
+  `EnvironmentVariables` 里设置才能生效;
+- **查询失败时**(如 OAuth 模式下本地没有明文 key、网络异常):菜单里显示一行错误
+  说明,不影响 Touch Bar 询问功能。
 
 ### 第 2 步:安装 ZCode 插件
 
@@ -105,4 +132,5 @@ bash scripts/uninstall.sh   # 停助手 + 删编译产物
 
 - **Touch Bar 不亮**:菜单栏有无问号气泡图标?没有则看 `~/Library/Application Support/zcode-touchbar/agent.log`;
 - **日志无异常但不接管**:确认插件已安装且启用(插件管理页),`hooks.json` 的 matcher 是 `*`;
-- **想要更长的点选窗口**:`ZCODE_TOUCHBAR_WAIT=120` 环境变量可加大等待秒数(hook 超时需同步 ≥ 该值)。
+- **想要更长的点选窗口**:`ZCODE_TOUCHBAR_WAIT=120` 环境变量可加大等待秒数(hook 超时需同步 ≥ 该值);
+- **菜单显示「额度：…」错误**:`额度：未读取到 ZCode API Key` 说明 `~/.zcode/v2/config.json` 里没有明文 key(常见于 ZCode 用 OAuth 登录),此时可在 ZCode 里改用 API Key 方式,或按上文用 `ZCODE_TOUCHBAR_USAGE_API_KEY` 手动指定;`HTTP 401/403` 说明 key 无效或不支持该接口。

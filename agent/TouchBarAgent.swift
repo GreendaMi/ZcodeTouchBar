@@ -103,25 +103,51 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
         poll()
     }
 
-    // 与应用图标同款的“问号气泡”模板图（菜单栏 / Touch Bar 自动适配深浅色）
-    static func questionBubbleImage(pointSize: CGFloat) -> NSImage? {
-        guard let base = NSImage(systemSymbolName: "questionmark.bubble", accessibilityDescription: "ZCode Touch Bar") else {
-            return nil
-        }
-        let configured = base.withSymbolConfiguration(.init(pointSize: pointSize, weight: .medium)) ?? base
-        configured.isTemplate = true
-        return configured
+    // 与应用图标同款的猫咪气泡剪影模板图（菜单栏 / Touch Bar 自动适配深浅色）
+    static func catBubbleImage(height: CGFloat) -> NSImage {
+        let aspect: CGFloat = 1.25            // 设计稿 25×20 单位
+        let scale: CGFloat = 4                // 4x 位图，小尺寸依然锐利
+        let w = height * aspect
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w * scale), pixelsHigh: Int(height * scale),
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        rep.size = NSSize(width: w, height: height)
+        NSGraphicsContext.saveGraphicsState()
+        let ctx = NSGraphicsContext(bitmapImageRep: rep)!
+        NSGraphicsContext.current = ctx
+        let u = height * scale / 20           // 每单位像素
+
+        // 气泡 + 双耳 + 尾巴（同色描边把耳尖圆角化）
+        let shape = NSBezierPath()
+        shape.append(NSBezierPath(roundedRect: NSRect(x: 1.5, y: 2.5, width: 22, height: 13), xRadius: 5.5, yRadius: 5.5))
+        shape.move(to: NSPoint(x: 4.6, y: 14.2)); shape.line(to: NSPoint(x: 6.0, y: 19.2)); shape.line(to: NSPoint(x: 8.8, y: 14.7)); shape.close()
+        shape.move(to: NSPoint(x: 20.4, y: 14.2)); shape.line(to: NSPoint(x: 19.0, y: 19.2)); shape.line(to: NSPoint(x: 16.2, y: 14.7)); shape.close()
+        shape.move(to: NSPoint(x: 4.8, y: 3.2)); shape.line(to: NSPoint(x: 3.0, y: 0.3)); shape.line(to: NSPoint(x: 8.6, y: 2.7)); shape.close()
+        NSColor.black.setFill()
+        shape.fill()
+        NSColor.black.setStroke()
+        shape.lineWidth = 0.9 * u
+        shape.lineJoinStyle = .round
+        shape.stroke()
+
+        // 镂空双眼（destinationOut 打孔，保留模板图透明度）
+        ctx.cgContext.setBlendMode(.destinationOut)
+        NSColor.black.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 7.5, y: 8.3, width: 2.6, height: 2.6)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 14.9, y: 8.3, width: 2.6, height: 2.6)).fill()
+        ctx.cgContext.setBlendMode(.normal)
+        NSGraphicsContext.restoreGraphicsState()
+
+        let image = NSImage(size: NSSize(width: w, height: height))
+        image.addRepresentation(rep)
+        image.isTemplate = true
+        return image
     }
 
     // 控制条小图标：仅在有待处理询问时出现（空闲时 Touch Bar 完全交还前台应用）
     private func setupControlStrip() {
         let item = NSCustomTouchBarItem(identifier: NSTouchBarItem.Identifier(Self.stripIdentifier))
-        let button: NSButton
-        if let image = Self.questionBubbleImage(pointSize: 20) {
-            button = NSButton(image: image, target: self, action: #selector(stripTapped))
-        } else {
-            button = NSButton(title: "💬", target: self, action: #selector(stripTapped))
-        }
+        let button = NSButton(image: Self.catBubbleImage(height: 20), target: self, action: #selector(stripTapped))
         button.bezelColor = .controlAccentColor
         item.view = button
         stripItem = item
@@ -268,10 +294,262 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
     }
 }
 
+// MARK: - Coding Plan 额度监控
+//
+// 读取 ~/.zcode/v2/ 配置里当前选中的 Coding Plan API Key（仅本机查询额度用），
+// 调用监控接口拿 GLM Coding Plan 剩余额度，供状态栏菜单灰显展示。
+// 默认 5 分钟节流，菜单项「刷新额度」可强制刷新。
+
+final class UsageMonitor: NSObject {
+    static let refreshInterval: TimeInterval = 300
+
+    private static let domesticUsageURL = URL(string: "https://open.bigmodel.cn/api/monitor/usage/quota/limit")!
+    private static let intlUsageURL = URL(string: "https://api.z.ai/api/monitor/usage/quota/limit")!
+
+    private(set) var quotaLines: [String] = []   // 展示行：套餐 / 5 小时窗口 / 本周窗口 / MCP（≤4 行）
+    private(set) var lastUpdated: Date?
+    private(set) var isFetching = false
+    private var lastFetchStart: Date?
+    private var onUpdate: (() -> Void)?
+
+    init(onUpdate: @escaping () -> Void) {
+        self.onUpdate = onUpdate
+        super.init()
+    }
+
+    func start() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.refresh(force: false)
+        }
+    }
+
+    /// 菜单展开时调用；距上次拉取超过间隔才在后台刷新，平时展示缓存
+    func menuWillOpen() {
+        refresh(force: false)
+    }
+
+    func refresh(force: Bool) {
+        guard !isFetching else { return }
+        if !force, let last = lastFetchStart, Date().timeIntervalSince(last) < Self.refreshInterval { return }
+        isFetching = true
+        lastFetchStart = Date()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let result = Self.fetchQuota()
+            DispatchQueue.main.async {
+                self.isFetching = false
+                switch result {
+                case .success(let lines):
+                    self.quotaLines = lines
+                    self.lastUpdated = Date()
+                case .failure(let reason):
+                    // 已有缓存数据时保留旧数据继续展示，仅无数据时给出错误行
+                    if self.lastUpdated == nil {
+                        self.quotaLines = ["额度：\(reason)"]
+                    }
+                }
+                self.onUpdate?()
+            }
+        }
+    }
+
+    var refreshItemTitle: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        if isFetching {
+            if let at = lastUpdated { return "刷新额度（更新于 \(formatter.string(from: at))，刷新中…）" }
+            return "刷新额度（首次查询中…）"
+        }
+        if let at = lastUpdated { return "刷新额度（更新于 \(formatter.string(from: at))）" }
+        return "刷新额度"
+    }
+
+    // MARK: 凭证解析
+
+    private struct Credential {
+        var apiKey: String
+        var usageURL: URL
+    }
+
+    // Result 的 Failure 必须是 Error，这里只需要携带文案，用轻量枚举代替
+    private enum QuotaResult<T> {
+        case success(T)
+        case failure(String)
+    }
+
+    private static func resolveCredential() -> QuotaResult<Credential> {
+        if let env = getenv("ZCODE_TOUCHBAR_USAGE_API_KEY") {
+            let key = String(cString: env)
+            if !key.isEmpty {
+                var url = domesticUsageURL
+                if let envURL = getenv("ZCODE_TOUCHBAR_USAGE_URL"), let parsed = URL(string: String(cString: envURL)) {
+                    url = parsed
+                }
+                return .success(Credential(apiKey: key, usageURL: url))
+            }
+        }
+        let home = NSHomeDirectory() as NSString
+        guard let settings = TouchBarController.readJSON(home.appendingPathComponent(".zcode/v2/setting.json")),
+              let config = TouchBarController.readJSON(home.appendingPathComponent(".zcode/v2/config.json")),
+              let providers = config["provider"] as? [String: Any] else {
+            return .failure("未找到 ~/.zcode/v2 配置")
+        }
+        // setting.json 指向当前选中的 provider，形如 "coding-plan:builtin:bigmodel-coding-plan"
+        var candidates: [String] = []
+        if let selected = (settings["modelProviderFamilySelectedKeys"] as? [String: Any])?["bigmodel"] as? String {
+            candidates.append(selected)
+            if selected.hasPrefix("coding-plan:") {
+                candidates.append(String(selected.dropFirst("coding-plan:".count)))
+            }
+        }
+        candidates.append(contentsOf: ["builtin:bigmodel-coding-plan", "builtin:bigmodel-start-plan"])
+        for id in candidates {
+            if let cred = credential(for: id, in: providers) { return .success(cred) }
+        }
+        // 兜底：任意配置了 apiKey 的 provider，国内 bigmodel 端点优先
+        var fallback: Credential?
+        for (_, node) in providers {
+            guard let dict = node as? [String: Any], let cred = credential(fromNode: dict) else { continue }
+            if cred.usageURL == domesticUsageURL { return .success(cred) }
+            fallback = fallback ?? cred
+        }
+        if let fallback = fallback { return .success(fallback) }
+        return .failure("未读取到 ZCode API Key")
+    }
+
+    private static func credential(for id: String, in providers: [String: Any]) -> Credential? {
+        guard let node = providers[id] as? [String: Any] else { return nil }
+        return credential(fromNode: node)
+    }
+
+    private static func credential(fromNode node: [String: Any]) -> Credential? {
+        guard let options = node["options"] as? [String: Any],
+              let key = options["apiKey"] as? String, !key.isEmpty else { return nil }
+        let base = options["baseURL"] as? String ?? ""
+        return Credential(apiKey: key, usageURL: base.contains("z.ai") ? intlUsageURL : domesticUsageURL)
+    }
+
+    // MARK: 请求与解析
+
+    private static func fetchQuota() -> QuotaResult<[String]> {
+        switch resolveCredential() {
+        case .failure(let reason):
+            return .failure(reason)
+        case .success(let cred):
+            let first = request(cred: cred, bearer: false)
+            if case .failure(let reason) = first, reason == "HTTP 401" || reason == "HTTP 403" {
+                // 有的 key 要求 Bearer 前缀，重试一次
+                if case .success(let lines) = request(cred: cred, bearer: true) { return .success(lines) }
+            }
+            return first
+        }
+    }
+
+    private static func request(cred: Credential, bearer: Bool) -> QuotaResult<[String]> {
+        var req = URLRequest(url: cred.usageURL)
+        req.timeoutInterval = 15
+        req.setValue(bearer ? "Bearer \(cred.apiKey)" : cred.apiKey, forHTTPHeaderField: "Authorization")
+        let semaphore = DispatchSemaphore(value: 0)
+        var body: Data?
+        var status = 0
+        var transportError: String?
+        let task = URLSession.shared.dataTask(with: req) { data, response, error in
+            if let http = response as? HTTPURLResponse { status = http.statusCode }
+            if let error = error { transportError = error.localizedDescription }
+            body = data
+            semaphore.signal()
+        }
+        task.resume()
+        semaphore.wait()
+        if status == 401 || status == 403 { return .failure("HTTP \(status)") }
+        if let transportError = transportError { return .failure("网络错误：\(transportError)") }
+        guard status == 200, let data = body else { return .failure("HTTP \(status)") }
+        return parseQuota(data)
+    }
+
+    private static func parseQuota(_ data: Data) -> QuotaResult<[String]> {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .failure("响应解析失败")
+        }
+        let ok = (root["success"] as? Bool) ?? ((root["code"] as? Int) == 200)
+        guard ok, let payload = root["data"] as? [String: Any] else {
+            return .failure(root["msg"] as? String ?? "接口返回异常")
+        }
+        var lines: [String] = []
+        if let level = payload["level"] as? String, !level.isEmpty {
+            lines.append("GLM Coding Plan（\(level.capitalized)）")
+        }
+        let limits = payload["limits"] as? [[String: Any]] ?? []
+        // 实测为 CREDIT_LIMIT；旧接口版本为 TOKENS_LIMIT。统一按重置时间升序，先重置的是 5 小时窗口
+        let tokenLimits = limits
+            .filter { ["CREDIT_LIMIT", "TOKENS_LIMIT"].contains($0["type"] as? String ?? "") }
+            .sorted { resetInterval($0) < resetInterval($1) }
+        let names = ["5 小时窗口", "本周窗口"]
+        for (index, limit) in tokenLimits.prefix(2).enumerated() {
+            lines.append(windowLine(named: names[index], limit))
+        }
+        if let mcp = limits.first(where: { ($0["type"] as? String) == "TIME_LIMIT" }) {
+            lines.append(mcpLine(mcp))
+        }
+        guard !lines.isEmpty else { return .failure("接口未返回额度数据") }
+        return .success(lines)
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let d = value as? Double { return d }
+        if let i = value as? Int { return Double(i) }
+        return nil
+    }
+
+    private static func resetInterval(_ limit: [String: Any]) -> Double {
+        number(limit["nextResetTime"]) ?? .infinity
+    }
+
+    private static func windowLine(named name: String, _ limit: [String: Any]) -> String {
+        let usage = number(limit["usage"])
+        let remaining = number(limit["remaining"])
+        var remainPct: Int?
+        if let usage = usage, usage > 0, let remaining = remaining {
+            remainPct = Int((remaining / usage * 100).rounded())
+        } else if let used = number(limit["percentage"]) {
+            remainPct = Int((100 - used).rounded()) // percentage 为已用比例
+        }
+        var text = name
+        if let pct = remainPct { text += " 剩余 \(min(max(pct, 0), 100))%" }
+        if let reset = resetDate(limit["nextResetTime"]) {
+            text += "（\(resetText(reset)) 重置）"
+        }
+        return text
+    }
+
+    private static func mcpLine(_ limit: [String: Any]) -> String {
+        if let usage = number(limit["usage"]).map(Int.init),
+           let used = number(limit["currentValue"]).map(Int.init) {
+            return "MCP 月度 已用 \(used)/\(usage)"
+        }
+        if let used = number(limit["percentage"]) { return "MCP 月度 已用 \(Int(used))%" }
+        return "MCP 月度额度"
+    }
+
+    private static func resetDate(_ value: Any?) -> Date? {
+        guard let raw = number(value), raw > 0 else { return nil }
+        return Date(timeIntervalSince1970: raw > 1e12 ? raw / 1000 : raw)
+    }
+
+    private static func resetText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "M/d HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
 // MARK: - 应用入口
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
+    private var usageMonitor: UsageMonitor?
+    private var usageInfoItems: [NSMenuItem] = []   // 套餐 / 5 小时窗口 / 本周窗口 / MCP，空缺时隐藏
+    private var usageRefreshItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard privateAPIAvailable() else {
@@ -283,19 +561,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = TouchBarController.questionBubbleImage(pointSize: 14)
-        if item.button?.image == nil {
-            item.button?.title = "💬"
-        }
+        item.button?.image = TouchBarController.catBubbleImage(height: 14)
         let menu = NSMenu()
+        menu.delegate = self
         menu.addItem(withTitle: "ZCode Touch Bar 助手运行中", action: nil, keyEquivalent: "")
+        menu.addItem(.separator())
+        for _ in 0..<4 {
+            usageInfoItems.append(menu.addItem(withTitle: "", action: nil, keyEquivalent: ""))
+        }
+        let refreshItem = menu.addItem(withTitle: "刷新额度", action: #selector(refreshUsage), keyEquivalent: "")
+        refreshItem.target = self
+        usageRefreshItem = refreshItem
         menu.addItem(.separator())
         let quitItem = menu.addItem(withTitle: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         item.menu = menu
         statusItem = item
 
+        let monitor = UsageMonitor(onUpdate: { [weak self] in self?.applyUsage() })
+        usageMonitor = monitor
+        applyUsage()
+        monitor.start()
+
         TouchBarController.shared.start()
+    }
+
+    // NSMenuDelegate：每次展开菜单时应用缓存文案，并按节流决定是否后台拉取
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        applyUsage()
+        usageMonitor?.menuWillOpen()
+    }
+
+    @objc private func refreshUsage() {
+        usageMonitor?.refresh(force: true)
+        applyUsage()
+    }
+
+    private func applyUsage() {
+        guard let monitor = usageMonitor else { return }
+        let lines = monitor.quotaLines
+        for (index, item) in usageInfoItems.enumerated() {
+            if index < lines.count {
+                item.title = lines[index]
+                item.isHidden = false
+            } else {
+                item.isHidden = true
+            }
+        }
+        usageRefreshItem?.title = monitor.refreshItemTitle
     }
 
     @objc private func quit() {

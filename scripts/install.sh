@@ -66,7 +66,7 @@ if launchctl print "gui/$UID_N/$LABEL" >/dev/null 2>&1; then
     echo "!! 助手检测到本机 Touch Bar 私有 API 不可用（无 Touch Bar 硬件或系统已移除）。"
     echo "!! 插件仍可安全安装，但只会走 ZCode 原生询问流程。"
   else
-    echo "==> 助手已运行。菜单栏出现问号气泡图标即代表正常。"
+    echo "==> 助手已运行。菜单栏出现猫咪气泡图标即代表正常。"
   fi
 else
   echo "!! LaunchAgent 启动失败，请查看日志: $LOG_PATH"
