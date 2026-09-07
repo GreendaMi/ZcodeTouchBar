@@ -104,42 +104,50 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
     }
 
     // 与应用图标同款的猫咪气泡剪影模板图（菜单栏 / Touch Bar 自动适配深浅色）
+    // 用纯 CGContext 绘制：位图上下文坐标 = 像素，显式 scaleBy 到设计单位，行为完全确定。
+    // pad 留白是必要的 —— 菜单栏会裁掉贴边内容。
     static func catBubbleImage(height: CGFloat) -> NSImage {
-        let aspect: CGFloat = 1.25            // 设计稿 25×20 单位
         let scale: CGFloat = 4                // 4x 位图，小尺寸依然锐利
-        let w = height * aspect
-        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(w * scale), pixelsHigh: Int(height * scale),
-                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        rep.size = NSSize(width: w, height: height)
-        NSGraphicsContext.saveGraphicsState()
-        let ctx = NSGraphicsContext(bitmapImageRep: rep)!
-        NSGraphicsContext.current = ctx
-        let u = height * scale / 20           // 每单位像素
+        let pad: CGFloat = 3                  // 四周留白（单位）
+        let designW: CGFloat = 25, designH: CGFloat = 20
+        let totalW = designW + pad * 2, totalH = designH + pad * 2
+        let w = height * totalW / totalH
+        let u = height * scale / totalH       // 每单位像素
 
-        // 气泡 + 双耳 + 尾巴（同色描边把耳尖圆角化）
-        let shape = NSBezierPath()
-        shape.append(NSBezierPath(roundedRect: NSRect(x: 1.5, y: 2.5, width: 22, height: 13), xRadius: 5.5, yRadius: 5.5))
-        shape.move(to: NSPoint(x: 4.6, y: 14.2)); shape.line(to: NSPoint(x: 6.0, y: 19.2)); shape.line(to: NSPoint(x: 8.8, y: 14.7)); shape.close()
-        shape.move(to: NSPoint(x: 20.4, y: 14.2)); shape.line(to: NSPoint(x: 19.0, y: 19.2)); shape.line(to: NSPoint(x: 16.2, y: 14.7)); shape.close()
-        shape.move(to: NSPoint(x: 4.8, y: 3.2)); shape.line(to: NSPoint(x: 3.0, y: 0.3)); shape.line(to: NSPoint(x: 8.6, y: 2.7)); shape.close()
-        NSColor.black.setFill()
-        shape.fill()
-        NSColor.black.setStroke()
-        shape.lineWidth = 0.9 * u
-        shape.lineJoinStyle = .round
-        shape.stroke()
+        func makeContext(_ pxW: Int, _ pxH: Int) -> CGContext {
+            let ctx = CGContext(data: nil, width: pxW, height: pxH, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            ctx.setAllowsAntialiasing(true)
+            ctx.setShouldAntialias(true)
+            return ctx
+        }
 
-        // 镂空双眼（destinationOut 打孔，保留模板图透明度）
-        ctx.cgContext.setBlendMode(.destinationOut)
-        NSColor.black.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 7.5, y: 8.3, width: 2.6, height: 2.6)).fill()
-        NSBezierPath(ovalIn: NSRect(x: 14.9, y: 8.3, width: 2.6, height: 2.6)).fill()
-        ctx.cgContext.setBlendMode(.normal)
-        NSGraphicsContext.restoreGraphicsState()
+        // 1) 内容位图
+        let ictx = makeContext(Int(designW * u), Int(designH * u))
+        ictx.scaleBy(x: u, y: u)
+        ictx.setFillColor(NSColor.black.cgColor)
+        ictx.setStrokeColor(NSColor.black.cgColor)
+        let shape = CGMutablePath()
+        shape.addRoundedRect(in: CGRect(x: 1.5, y: 2.5, width: 22, height: 13), cornerWidth: 5.5, cornerHeight: 5.5)
+        shape.move(to: CGPoint(x: 4.6, y: 14.2)); shape.addLine(to: CGPoint(x: 6.0, y: 19.2)); shape.addLine(to: CGPoint(x: 8.8, y: 14.7)); shape.closeSubpath()
+        shape.move(to: CGPoint(x: 20.4, y: 14.2)); shape.addLine(to: CGPoint(x: 19.0, y: 19.2)); shape.addLine(to: CGPoint(x: 16.2, y: 14.7)); shape.closeSubpath()
+        shape.move(to: CGPoint(x: 4.8, y: 3.2)); shape.addLine(to: CGPoint(x: 3.0, y: 0.3)); shape.addLine(to: CGPoint(x: 8.6, y: 2.7)); shape.closeSubpath()
+        ictx.addPath(shape)
+        ictx.setLineWidth(0.9)
+        ictx.setLineJoin(.round)
+        ictx.setLineCap(.round)
+        ictx.drawPath(using: .fillStroke)     // 同色填充+描边：耳尖圆角化
+        ictx.setBlendMode(.destinationOut)    // 镂空双眼，保留模板图透明度
+        ictx.fillEllipse(in: CGRect(x: 7.5, y: 8.3, width: 2.6, height: 2.6))
+        ictx.fillEllipse(in: CGRect(x: 14.9, y: 8.3, width: 2.6, height: 2.6))
+        let innerImage = ictx.makeImage()!
 
-        let image = NSImage(size: NSSize(width: w, height: height))
-        image.addRepresentation(rep)
+        // 2) 外层画布：内容贴入中央，四周留安全边距
+        let octx = makeContext(Int(w * scale), Int(height * scale))
+        octx.draw(innerImage, in: CGRect(x: pad * u, y: pad * u, width: designW * u, height: designH * u))
+
+        let image = NSImage(cgImage: octx.makeImage()!, size: NSSize(width: w, height: height))
         image.isTemplate = true
         return image
     }
@@ -147,7 +155,7 @@ final class TouchBarController: NSObject, NSTouchBarDelegate {
     // 控制条小图标：仅在有待处理询问时出现（空闲时 Touch Bar 完全交还前台应用）
     private func setupControlStrip() {
         let item = NSCustomTouchBarItem(identifier: NSTouchBarItem.Identifier(Self.stripIdentifier))
-        let button = NSButton(image: Self.catBubbleImage(height: 20), target: self, action: #selector(stripTapped))
+        let button = NSButton(image: Self.catBubbleImage(height: 22), target: self, action: #selector(stripTapped))
         button.bezelColor = .controlAccentColor
         item.view = button
         stripItem = item
@@ -560,7 +568,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = TouchBarController.catBubbleImage(height: 14)
+        item.button?.image = TouchBarController.catBubbleImage(height: 15)
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(withTitle: "ZCode Touch Bar 助手运行中", action: nil, keyEquivalent: "")
