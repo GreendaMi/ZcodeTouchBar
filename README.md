@@ -1,14 +1,14 @@
 # zcode-touchbar
 
 <p align="center">
-  <img src="assets/icon.png" width="128" alt="zcode-touchbar 图标：对话气泡指向 Touch Bar 按键">
+  <img src="assets/icon.png" width="128" alt="zcode-touchbar 图标：奶油底上的猫咪提问气泡，珊瑚色 ? 徽章">
 </p>
 
 在 MacBook **Touch Bar** 上操作 ZCode 的询问项:
 
 - 🤖 **AI 提问**(AskUserQuestion):Touch Bar 点亮并显示每个选项一个按钮,点一下即作为你的回答发给 AI;
-- 🔐 **工具权限确认**(Bash / Write / Edit 等):Touch Bar 显示「✓ 允许 / ✕ 拒绝」按钮;
-- 📊 **菜单栏显示剩余额度**:点击菜单栏 💬 图标,下拉菜单里直接看 GLM Coding Plan 的 5 小时 / 本周窗口剩余百分比;
+- 🔐 **工具权限确认**(Bash / Write / Edit 等):Touch Bar 显示「需要权限」与「✓ 允许 / ✕ 拒绝」按钮;
+- 📊 **菜单栏显示剩余额度**:点击菜单栏 🐱 图标,下拉菜单里直接看 GLM Coding Plan 的 5 小时 / 本周窗口剩余百分比;
 - 💤 无询问时 Touch Bar 完全交还前台应用,零占用。
 
 全程**不模拟键盘、不需要辅助功能权限**。ZCode 的原生询问界面照常可用 —— Touch Bar 和界面是"先答先赢"的并行关系。
@@ -19,7 +19,7 @@
 ZCode (PermissionRequest hook, matcher *)
    │  stdin: 事件 JSON(问题/选项 或 工具名/风险)
    ▼
-plugin/hooks/ask.sh + parse.jxa          TouchBarAgent (Swift LaunchAgent, 菜单栏 💬)
+plugin/hooks/ask.sh + parse.jxa          TouchBarAgent (Swift LaunchAgent, 菜单栏 🐱)
    │  写 request.json ──────────────────►  轮询发现新请求,写 ack.json
    │  ◄───────────────────────────────    Touch Bar 全条接管显示按钮
    │                                          │ 用户点选
@@ -43,7 +43,7 @@ bash scripts/install.sh
 脚本会用 `swiftc`(Xcode Command Line Tools)把 `agent/TouchBarAgent.swift` 编译到
 `~/Applications/ZCodeTouchBarAgent.app`(访达/启动台可见),并注册 LaunchAgent
 `com.zpy.zcode-touchbar.agent`(登录自启;正常退出不拉起,崩溃自动重启)。
-它是纯菜单栏应用(`LSUIElement`):不会出现在 Dock,运行中只有菜单栏一枚单色问号气泡。
+它是纯菜单栏应用(`LSUIElement`):不会出现在 Dock,运行中只有菜单栏一枚单色猫咪气泡剪影。
 
 > 助手使用与 MTMR/Pock 相同的 DFRFoundation 私有 API。若你的机型没有 Touch Bar 或系统
 > 已移除相关 API,助手启动时会自动退出并在日志说明;此时插件仍可安全安装,只是所有询问
@@ -51,7 +51,7 @@ bash scripts/install.sh
 
 ### 菜单栏额度显示
 
-点击菜单栏 💬 图标,下拉菜单在「退出」上方会显示(数据每 5 分钟自动刷新,也可点
+点击菜单栏 🐱 图标,下拉菜单在「退出」上方会显示(数据每 5 分钟自动刷新,也可点
 「刷新额度」手动拉取):
 
 ```
@@ -130,7 +130,7 @@ bash scripts/uninstall.sh   # 停助手 + 删编译产物
 
 ## 排障
 
-- **Touch Bar 不亮**:菜单栏有无问号气泡图标?没有则看 `~/Library/Application Support/zcode-touchbar/agent.log`;
+- **Touch Bar 不亮**:菜单栏有无猫咪气泡图标?没有则看 `~/Library/Application Support/zcode-touchbar/agent.log`;
 - **日志无异常但不接管**:确认插件已安装且启用(插件管理页),`hooks.json` 的 matcher 是 `*`;
 - **想要更长的点选窗口**:`ZCODE_TOUCHBAR_WAIT=120` 环境变量可加大等待秒数(hook 超时需同步 ≥ 该值);
 - **菜单显示「额度：…」错误**:`额度：未读取到 ZCode API Key` 说明 `~/.zcode/v2/config.json` 里没有明文 key(常见于 ZCode 用 OAuth 登录),此时可在 ZCode 里改用 API Key 方式,或按上文用 `ZCODE_TOUCHBAR_USAGE_API_KEY` 手动指定;`HTTP 401/403` 说明 key 无效或不支持该接口。
